@@ -5,7 +5,20 @@ function useAuth() {
   const [user, setUser] = useState(null)
   useEffect(() => {
     let mounted = true
-    supabase.auth.getUser().then(r => { if (mounted) setUser(r.data.user) })
+    // getSession returns the full session (access/refresh tokens handled internally)
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return
+      const session = data?.session
+      setUser(session?.user ?? null)
+      // clear tokens from the URL (they are returned in the hash after OAuth)
+      try {
+        if (window && window.location && window.location.hash) {
+          window.history.replaceState(null, '', window.location.pathname)
+        }
+      } catch (e) {
+        // ignore in environments without history
+      }
+    })
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
     })
