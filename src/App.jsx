@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
 
 function useAuth() {
@@ -41,24 +41,37 @@ function AuthPanel() {
   )
 }
 
-function PlayerList({ players, meId, onToggleReady }) {
+function PlayerList({ players, meId, showReadyButtons, onToggleReady, activeIds, presenceSynced }) {
+  // Only consider players that have explicitly joined (joined_at set).
+  const joinedPlayers = (players || []).filter(p => !!p.joined_at)
+
+  if (joinedPlayers.length === 0) {
+    return <div className="text-gray-400">No one has joined the game yet.</div>
+  }
+
+  // If presence has synced AND there are known active connections, indicate online/offline.
+  // We still show the joined players list (so people who joined but are disconnected still appear as offline).
   return (
     <div className="space-y-2">
-      {players.map(p => (
-        <div key={p.id} className="flex items-center justify-between p-3 bg-gray-800 rounded">
-          <div className="flex items-center gap-3">
-            <img src={p.avatar_url} className="w-10 h-10 rounded-full" alt="avatar" />
-            <div>
-              <div className="font-medium">{p.name} {p.id===meId && <span className="text-xs text-gray-400">(you)</span>}</div>
-              <div className="text-sm text-gray-500">{p.status}</div>
+      {joinedPlayers.map(p => {
+        const isActive = presenceSynced && activeIds && activeIds.size > 0 ? activeIds.has(p.id) : false
+        return (
+          <div key={p.id} className="flex items-center justify-between p-3 bg-gray-800 rounded">
+            <div className="flex items-center gap-3">
+              <div>
+                <div className="font-medium">{p.name} {p.id===meId && <span className="text-xs text-gray-400">(you)</span>}</div>
+                <div className="text-sm text-gray-500">{isActive ? (p.status || 'online') : 'offline'}</div>
+              </div>
             </div>
+            {showReadyButtons && (
+              <div className="flex items-center gap-2">
+                {p.ready ? <span className="text-green-400">✔ Ready</span> : <span className="text-gray-400">Not ready</span>}
+                {p.id===meId && onToggleReady && <button onClick={() => onToggleReady(p)} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm">{p.ready? 'Unready':'Ready'}</button>}
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            {p.ready ? <span className="text-green-400">✔ Ready</span> : <span className="text-gray-400">Not ready</span>}
-            {p.id===meId && <button onClick={() => onToggleReady(p)} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm">{p.ready? 'Unready':'Ready'}</button>}
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -75,11 +88,27 @@ function PhaseBox({ title, children }) {
 export default function App() {
   const user = useAuth()
   const [players, setPlayers] = useState([])
+  const [activeIds, setActiveIds] = useState(new Set())
+  const [presenceSynced, setPresenceSynced] = useState(false)
   const [game, setGame] = useState(null)
+  const [hasJoined, setHasJoined] = useState(false)
+  const presenceChannelRef = useRef(null)
+
+  // Check if current user has joined
+  useEffect(() => {
+    if (user && players.length > 0) {
+      const userInPlayers = players.some(p => p.id === user.id)
+      setHasJoined(userInPlayers)
+    } else {
+      setHasJoined(false)
+    }
+  }, [user, players])
 
   // load players and subscribe
   useEffect(() => {
     let channel
+    let heartbeatInterval
+    
     const load = async () => {
       try {
         const { data, error } = await supabase.from('players').select('*')
@@ -92,6 +121,7 @@ export default function App() {
         console.error('players load exception', e)
       }
 
+      // Subscribe to players table changes so UI updates when someone joins/leaves
       channel = supabase
         .channel('public:players')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, async () => {
@@ -104,9 +134,142 @@ export default function App() {
           }
         })
         .subscribe()
+
+      // Also create a presence channel to track active websocket connections.
+      // We'll use presence to show only currently connected players in the UI.
+      try {
+        const pch = supabase.channel('presence:players')
+          .on('presence', { event: 'sync' }, () => {
+            try {
+              const state = pch.presenceState()
+              const ids = new Set()
+              Object.keys(state || {}).forEach(key => {
+                const entries = state[key] || []
+                entries.forEach(en => { if (en.user_id) ids.add(en.user_id) })
+              })
+              setActiveIds(ids)
+              setPresenceSynced(true)
+            } catch (e) {
+              console.error('presence sync error', e)
+            }
+          })
+          .on('presence', { event: 'diff' }, ({ oldState, newState }) => {
+            try {
+              const state = pch.presenceState()
+              const ids = new Set()
+              Object.keys(state || {}).forEach(key => {
+                const entries = state[key] || []
+                entries.forEach(en => { if (en.user_id) ids.add(en.user_id) })
+              })
+              setActiveIds(ids)
+            } catch (e) {
+              console.error('presence diff error', e)
+            }
+          })
+          .subscribe()
+        presenceChannelRef.current = pch
+      } catch (e) {
+        console.error('presence channel setup failed', e)
+      }
     }
     load()
-    return () => channel && supabase.removeChannel(channel)
+
+    // Heartbeat to keep player active and detect when they leave
+    if (user && hasJoined) {
+      const updateHeartbeat = async () => {
+        try {
+          // Try to update last_seen, fallback to updating joined_at if column doesn't exist
+          const { error } = await supabase.from('players').update({ 
+            last_seen: new Date().toISOString() 
+          }).eq('id', user.id)
+          
+          if (error && error.message.includes('column "last_seen" does not exist')) {
+            // Fallback: update joined_at as heartbeat
+            await supabase.from('players').update({ 
+              joined_at: new Date().toISOString() 
+            }).eq('id', user.id)
+          }
+        } catch (e) {
+          console.error('Error updating heartbeat', e)
+        }
+      }
+      
+      // Update heartbeat every 10 seconds
+      heartbeatInterval = setInterval(updateHeartbeat, 10000)
+      // Initial heartbeat
+      updateHeartbeat()
+    }
+
+    // Cleanup function to remove player when they leave
+    const handleBeforeUnload = () => {
+      if (user && hasJoined) {
+        // Use sendBeacon for more reliable cleanup on page unload
+        const data = JSON.stringify({ user_id: user.id })
+        if (navigator.sendBeacon) {
+          // This is more reliable but we need a server endpoint
+          // For now, use synchronous request as fallback
+          try {
+            supabase.from('players').delete().eq('id', user.id)
+          } catch (e) {
+            console.error('Error removing player on unload', e)
+          }
+        }
+      }
+    }
+
+    // Add event listeners for when user leaves
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener('pagehide', handleBeforeUnload)
+    window.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && user && hasJoined) {
+        // User switched tabs or minimized window
+        setTimeout(() => {
+          if (document.visibilityState === 'hidden') {
+            // Still hidden after 2 seconds, consider leaving
+            // We rely on presence to remove the user from the active list.
+            // Attempt best-effort untrack so presence removes this connection.
+            try { presenceChannelRef.current?.untrack?.(user.id) } catch (e) { /* ignore */ }
+          }
+        }, 2000)
+      }
+    })
+
+    return () => {
+      if (channel) supabase.removeChannel(channel)
+      if (presenceChannelRef.current) supabase.removeChannel(presenceChannelRef.current)
+      if (heartbeatInterval) clearInterval(heartbeatInterval)
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('pagehide', handleBeforeUnload)
+      
+      // Remove player when component unmounts
+      if (user && hasJoined) {
+        // Best-effort: untrack presence and attempt to delete the player row.
+  try { presenceChannelRef.current?.untrack?.(user.id) } catch (e) { /* ignore */ }
+        supabase.from('players').delete().eq('id', user.id).then().catch(console.error)
+      }
+    }
+  }, [user, hasJoined])
+
+  // Periodic cleanup of inactive players
+  useEffect(() => {
+    const cleanupInterval = setInterval(async () => {
+      try {
+        // Remove players who haven't been seen for more than 30 seconds
+        const cutoff = new Date(Date.now() - 30000).toISOString()
+        
+        // Try to use last_seen column first, fallback to joined_at
+        let { error } = await supabase.from('players').delete().lt('last_seen', cutoff)
+        
+        if (error && error.message.includes('column "last_seen" does not exist')) {
+          // Fallback: use joined_at column for cleanup (less reliable but works)
+          await supabase.from('players').delete().lt('joined_at', cutoff)
+        }
+      } catch (e) {
+        console.error('Error during periodic cleanup', e)
+      }
+    }, 15000) // Run cleanup every 15 seconds
+
+    return () => clearInterval(cleanupInterval)
   }, [])
 
   // load game_state and subscribe
@@ -135,12 +298,22 @@ export default function App() {
   const handleJoin = async () => {
     if (!user) return alert('Please sign in')
     const payload = {
-  id: user.id,
-  uid: user.id,
+      id: user.id,
+      uid: user.id,
       name: user.user_metadata?.full_name || user.email,
-      avatar_url: user.user_metadata?.avatar_url || user.user_metadata?.picture || ''
+      avatar_url: user.user_metadata?.avatar_url || user.user_metadata?.picture || '',
+      ready: false,
+      joined_at: new Date().toISOString()
     }
-    console.log('handleJoin payload', payload)
+    
+    // Try to add last_seen if column exists
+    try {
+      payload.last_seen = new Date().toISOString()
+    } catch (e) {
+      // Column might not exist yet
+    }
+    
+  // attempt to upsert the player row
     try {
       const { data, error } = await supabase.from('players').upsert(payload, { onConflict: 'id', returning: 'representation' })
       if (error) {
@@ -148,7 +321,28 @@ export default function App() {
         alert('Join failed: ' + (error.message || JSON.stringify(error)))
         return
       }
-      console.log('joined player', data)
+      setHasJoined(true)
+
+      // Track presence on the presence channel so other clients know we're active
+      try {
+        const pch = presenceChannelRef.current
+        // If presence channel not set up yet, try to create a minimal one and join
+        if (!pch) {
+          const newPch = supabase.channel('presence:players')
+          await newPch.subscribe()
+          presenceChannelRef.current = newPch
+        }
+        // Track this connection with a unique key and payload so presenceState exposes user_id
+        try {
+          // Preferred: track(key, payload)
+          await presenceChannelRef.current.track(user.id, { user_id: user.id, name: payload.name })
+        } catch (e) {
+          // Fallback older signature: track(payload)
+          try { await presenceChannelRef.current.track({ user_id: user.id, name: payload.name }) } catch (err) { /* ignore */ }
+        }
+      } catch (e) {
+        console.error('presence track failed', e)
+      }
 
       // refresh game_state so UI reflects current phase immediately
       try {
@@ -161,6 +355,17 @@ export default function App() {
     } catch (e) {
       console.error('upsert exception', e)
       alert('Join failed: ' + e.message)
+    }
+  }
+
+  const handleLeave = async () => {
+    if (!user || !hasJoined) return
+    try {
+  await supabase.from('players').delete().eq('id', user.id)
+  try { await presenceChannelRef.current?.untrack?.(user.id) } catch (e) { /* ignore */ }
+      setHasJoined(false)
+    } catch (e) {
+      console.error('Error leaving game', e)
     }
   }
 
@@ -179,10 +384,16 @@ export default function App() {
     }
   }
 
-  const canStart = players.length >= 3 && players.every(p => p.ready)
+  const canStart = players.length >= 3 && hasJoined
 
   const startGame = async () => {
-    if (!canStart) return alert('Need >=3 players and all ready')
+    if (!canStart) return alert('Need >=3 players and you must join the game')
+    
+    // Set all players as ready when game starts
+    for (const p of players) {
+      await supabase.from('players').update({ ready: true }).eq('id', p.id)
+    }
+    
     const imp = players[Math.floor(Math.random()*players.length)].id
     const qres = await supabase.from('questions').select('*').limit(1).order('id', { ascending: false })
     const question = (qres.data && qres.data[0]) || null
@@ -234,7 +445,14 @@ export default function App() {
         </header>
 
         <div className="mb-4 flex flex-wrap gap-3">
-          <button onClick={handleJoin} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded">Join Game</button>
+          {!hasJoined ? (
+            <button onClick={handleJoin} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded">Join Game</button>
+          ) : (
+            <div className="flex gap-2">
+              <span className="px-4 py-2 bg-green-800 text-green-200 rounded">✓ Joined</span>
+              <button onClick={handleLeave} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded">Leave Game</button>
+            </div>
+          )}
           <button onClick={startGame} disabled={!canStart} className={`px-4 py-2 rounded ${canStart? 'bg-yellow-600 hover:bg-yellow-500 text-white':'bg-gray-700 text-gray-400 cursor-not-allowed'}`}>Start Game</button>
           <button onClick={resetGame} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Reset</button>
         </div>
@@ -242,7 +460,7 @@ export default function App() {
         <main className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
             <PhaseBox title={`Phase: ${game?.state || 'waiting'}`}>
-              {game?.state === 'waiting' && <div className="text-gray-400">Waiting for players to join and ready up. At least 3 players required.</div>}
+              {game?.state === 'waiting' && <div className="text-gray-400">Waiting for players to join. At least 3 players required to start the game.</div>}
               {game?.state === 'question' && <QuestionPhase submitAnswer={submitAnswer} user={user} />}
               {game?.state === 'discussion' && <DiscussionPhase endsAt={game.discussion_ends_at} />}
               {game?.state === 'voting' && <VotingPhase players={players} onVote={vote} />}
@@ -252,7 +470,14 @@ export default function App() {
 
           <aside>
             <PhaseBox title="Players">
-              <PlayerList players={players} meId={user?.id} onToggleReady={toggleReady} />
+              <PlayerList 
+                players={players} 
+                meId={user?.id} 
+                showReadyButtons={players.length < 3} 
+                onToggleReady={players.length < 3 ? toggleReady : null}
+                activeIds={activeIds}
+                presenceSynced={presenceSynced}
+              />
             </PhaseBox>
           </aside>
         </main>
@@ -313,7 +538,7 @@ function VotingPhase({ players, onVote }) {
       <div className="space-y-2">
         {players.map(p => (
           <div key={p.id} className="flex justify-between items-center p-2 bg-gray-700 rounded">
-            <div className="flex items-center gap-3"><img src={p.avatar_url} className="w-8 h-8 rounded-full" alt="avatar" />{p.name}</div>
+            <div className="flex items-center gap-3">{p.name}</div>
             <button onClick={()=>onVote(p.id)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded">Vote</button>
           </div>
         ))}

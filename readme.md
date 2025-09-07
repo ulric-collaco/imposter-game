@@ -16,4 +16,5 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 Notes
 - You'll need to enable Google OAuth in Supabase Auth settings and add redirect URL (e.g., http://localhost:5173).
 - The app uses Realtime and row-level security may require policies for authenticated users.
-# imposter game
+
+Note: players list not working correctly in this prototype — presence handling is experimental.

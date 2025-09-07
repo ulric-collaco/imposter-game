@@ -7,7 +7,8 @@ create table if not exists players (
   avatar_url text,
   ready boolean default false,
   status text default 'alive',
-  joined_at timestamptz default now()
+  joined_at timestamptz default now(),
+  last_seen timestamptz default now()
 );
 
 -- single-row game state table; id=1 used as the universal game
@@ -59,6 +60,10 @@ create table if not exists votes (
 
 -- simple indexes
 create index if not exists idx_players_joined_at on players(joined_at);
+create index if not exists idx_players_last_seen on players(last_seen);
+
+-- Add last_seen column if it doesn't exist (for existing databases)
+alter table players add column if not exists last_seen timestamptz default now();
 
 -- sample data
 insert into questions (prompt, related_prompt) values
