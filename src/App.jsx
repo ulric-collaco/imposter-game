@@ -29,7 +29,7 @@ function useAuth() {
 
 function AuthPanel() {
   const user = useAuth()
-  const signIn = async () => supabase.auth.signInWithOAuth({ provider: 'google' })
+  const signIn = async () => supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })
   const signOut = async () => supabase.auth.signOut()
   if (!user) return <button onClick={signIn} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded">Sign in</button>
   return (
