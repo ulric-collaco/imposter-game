@@ -1,20 +1,62 @@
-# Imposter Game
+# Multiplayer Game
 
-Prototype React + Supabase game where players join one universal room, ready up, answer questions, discuss, and vote to find the imposter.
+A real-time multiplayer game built with React, Node.js WebSocket server, and Supabase. Players join a room, ready up, answer questions, discuss, and vote to find the imposter.
 
-Quick start
+## Project Structure
 
-1. npm install
-2. Create a Supabase project and run the SQL in `supabase_schema.sql` from the SQL editor.
-3. Create a `.env` file at project root with:
+```
+├── frontend/          # React frontend application
+├── backend/           # Node.js WebSocket server
+├── .kiro/            # Kiro IDE specifications
+└── docs/             # Documentation files
+```
 
-VITE_SUPABASE_URL=your-project-url
-VITE_SUPABASE_ANON_KEY=your-anon-key
+## Quick Start
 
-4. npm run dev
+1. **Install all dependencies:**
 
-Notes
-- You'll need to enable Google OAuth in Supabase Auth settings and add redirect URL (e.g., http://localhost:5173).
-- The app uses Realtime and row-level security may require policies for authenticated users.
+```bash
+npm run install:all
+```
 
-Note: players list not working correctly in this prototype — presence handling is experimental.
+2. **Set up environment variables:**
+
+- Frontend: Copy `frontend/.env.example` to `frontend/.env` and add your Supabase credentials
+- Backend: Copy `backend/.env.example` to `backend/.env` and add your Supabase service key
+
+3. **Set up the database:**
+   Run the SQL commands in `backend/setup_database.sql` in your Supabase SQL editor.
+
+4. **Start development servers:**
+
+```bash
+npm run dev
+```
+
+5. **Open your browser:**
+
+- Frontend: http://localhost:5173
+- Backend health check: http://localhost:8080/health
+
+## Available Scripts
+
+- `npm run dev` - Start both frontend and backend in development mode
+- `npm start` - Start both frontend (production build) and backend
+- `npm run install:all` - Install dependencies for root, frontend, and backend
+- `npm run build` - Build frontend for production
+- `npm test` - Run tests for both frontend and backend
+- `npm run frontend:dev` - Start only frontend in development
+- `npm run backend:dev` - Start only backend
+
+## Features
+
+- Real-time WebSocket communication
+- Google OAuth authentication via Supabase
+- Player management and game state synchronization
+- Responsive UI with Tailwind CSS
+- Comprehensive testing suite
+
+## Notes
+
+- Enable Google OAuth in Supabase Auth settings and add redirect URL (e.g., http://localhost:5173)
+- The app uses WebSocket for real-time communication with Supabase as fallback
