@@ -3,27 +3,18 @@
   "version": "1.0.0",
   "description": "A real-time multiplayer game built with React, Node.js WebSocket server, and Supabase",
   "scripts": {
-    "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
-    "start": "concurrently \"npm run backend:start\" \"npm run frontend:start\"",
-    "backend:dev": "cd backend && npm start",
-    "backend:start": "cd backend && npm start",
-    "frontend:dev": "cd frontend && npm run dev",
-    "frontend:start": "cd frontend && npm run build && npm run preview",
-    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install",
+    "dev": "cd frontend && npm run dev",
+    "start": "cd frontend && npm run preview",
+    "install:all": "npm install && cd frontend && npm install",
     "build": "cd frontend && npm run build",
-    "test": "concurrently \"npm run backend:test\" \"npm run frontend:test\"",
-    "backend:test": "cd backend && npm test",
-    "frontend:test": "cd frontend && npm test"
+    "test": "cd frontend && npm test"
   },
-  "devDependencies": {
-    "concurrently": "^8.2.2"
-  },
+  "devDependencies": {},
   "keywords": [
     "multiplayer",
     "game",
-    "websocket",
+    "realtime",
     "react",
-    "nodejs",
     "supabase"
   ],
   "author": "",
