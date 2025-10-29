@@ -77,6 +77,8 @@ CREATE INDEX IF NOT EXISTS idx_votes_room ON votes(room_code);
 CREATE INDEX IF NOT EXISTS idx_votes_player_id ON votes(player_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_code);
 CREATE INDEX IF NOT EXISTS idx_answers_room ON answers(room_code);
+-- Create index for active players in rooms
+CREATE INDEX IF NOT EXISTS idx_players_room_active ON players(room_code, is_active) WHERE is_active = true;
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE players ENABLE ROW LEVEL SECURITY;
@@ -122,5 +124,11 @@ CREATE POLICY "Anyone can insert game_state" ON game_state
 
 CREATE POLICY "Anyone can update game_state" ON game_state
   FOR UPDATE USING (true);
+
+-- Add joined_at column to track when player actually joined
+ALTER TABLE players ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ;
+
+-- Update existing rows
+UPDATE players SET joined_at = created_at WHERE joined_at IS NULL;
 
 -- No default records; games are per room
