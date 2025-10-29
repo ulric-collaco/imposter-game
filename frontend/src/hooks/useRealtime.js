@@ -49,7 +49,7 @@ export function useRealtime() {
         isActive: p.is_active,
         ready: !!p.ready,
       }))
-      setPlayers(mappedPlayers)
+      setPlayers(mappedPlayers) 
 
       // games (one row per room)
       const { data: gData, error: gErr } = await supabase
@@ -280,10 +280,61 @@ export function useRealtime() {
     try {
       switch (type) {
         case 'join': {
-          const id = payload.playerId || randId()
           const name = payload.playerName?.trim()
           const code = (payload.roomCode || '').trim()
           if (!name || !/^\d{3}$/.test(code)) throw new Error('Invalid join payload')
+
+          // Check if user already has a session in a different room
+          const existingSession = localStorage.getItem('imposter_session')
+          if (existingSession) {
+            const session = JSON.parse(existingSession)
+            if (session.roomCode !== code) {
+              throw new Error(`You are already in room ${session.roomCode}. Please leave that room first.`)
+            }
+            // Same room, reuse the ID
+            const id = session.playerId
+            
+            // Check if this player is already active in this room
+            const { data: existingPlayer } = await supabase
+              .from('players')
+              .select('id, is_active')
+              .eq('id', id)
+              .eq('room_code', code)
+              .single()
+
+            if (existingPlayer?.is_active) {
+              // Already joined, just reconnect
+              setMyPlayerId(id)
+              roomCodeRef.current = code
+              playerNameRef.current = name
+              setJoinedSuccessfully(true)
+              await loadInitialData(code)
+              const cleanup = setupSubscriptions(code)
+              window.__roomCleanup && window.__roomCleanup()
+              window.__roomCleanup = cleanup
+              return true
+            }
+          }
+
+          // Generate new ID for new session
+          const id = randId()
+
+          // Check if name is already taken in this room
+          const { data: existingNames, error: nameErr } = await supabase
+            .from('players')
+            .select('name, id')
+            .eq('room_code', code)
+            .eq('is_active', true)
+          
+          if (nameErr) throw nameErr
+          
+          const nameTaken = existingNames?.some(p => 
+            p.name.toLowerCase() === name.toLowerCase() && p.id !== id
+          )
+          
+          if (nameTaken) {
+            throw new Error(`Name "${name}" is already taken in this room. Please choose a different name.`)
+          }
 
           // Ensure room code is set
           roomCodeRef.current = code
@@ -299,13 +350,28 @@ export function useRealtime() {
             last_seen: nowIso(),
             created_at: nowIso(),
             updated_at: nowIso(),
-          })
+            joined_at: nowIso(),
+          }, { onConflict: 'id' })
           if (pErr) throw pErr
+          
           setMyPlayerId(id)
           setJoinedSuccessfully(true)
 
+          // Save session to localStorage
+          localStorage.setItem('imposter_session', JSON.stringify({
+            playerId: id,
+            playerName: name,
+            roomCode: code,
+            joinedAt: nowIso()
+          }))
+
           // Ensure a games row exists
-          await supabase.from('games').upsert({ room_code: code, phase: 'waiting', updated_at: nowIso() }, { onConflict: 'room_code' })
+          await supabase.from('games').upsert({ 
+            room_code: code, 
+            phase: 'waiting', 
+            updated_at: nowIso(),
+            created_at: nowIso()
+          }, { onConflict: 'room_code' })
 
           // Load initial + subscribe
           await loadInitialData(code)
@@ -317,9 +383,44 @@ export function useRealtime() {
         }
         case 'leave': {
           if (!roomCode || !myPlayerId) return false
-          await supabase.from('players').update({ is_active: false, updated_at: nowIso() }).eq('id', myPlayerId)
+          
+          // Mark player as inactive
+          await supabase.from('players').update({ 
+            is_active: false, 
+            updated_at: nowIso() 
+          }).eq('id', myPlayerId)
+          
+          // Clear localStorage
+          localStorage.removeItem('imposter_session')
+          
           setJoinedSuccessfully(false)
-          if (window.__roomCleanup) { window.__roomCleanup(); window.__roomCleanup = null }
+          setMyPlayerId(null)
+          roomCodeRef.current = null
+          playerNameRef.current = ''
+          
+          if (window.__roomCleanup) { 
+            window.__roomCleanup()
+            window.__roomCleanup = null 
+          }
+          
+          // Check if room is now empty and clean up
+          const { data: remainingPlayers } = await supabase
+            .from('players')
+            .select('id')
+            .eq('room_code', roomCode)
+            .eq('is_active', true)
+          
+          if (!remainingPlayers || remainingPlayers.length === 0) {
+            // Room is empty, delete all room data
+            await Promise.all([
+              supabase.from('games').delete().eq('room_code', roomCode),
+              supabase.from('messages').delete().eq('room_code', roomCode),
+              supabase.from('votes').delete().eq('room_code', roomCode),
+              supabase.from('answers').delete().eq('room_code', roomCode),
+              supabase.from('players').delete().eq('room_code', roomCode)
+            ])
+          }
+          
           return true
         }
         case 'toggle_ready': {
@@ -384,7 +485,26 @@ export function useRealtime() {
           if (!roomCode) return false
           // reset back to waiting (leader performs)
           if (isLeaderRef.current) {
-            await transitionPhase('waiting', { results: null, imposter_id: null, question_id: null, discussion_ends_at: null })
+            // Clear old game data
+            await Promise.all([
+              supabase.from('votes').delete().eq('room_code', roomCode),
+              supabase.from('answers').delete().eq('room_code', roomCode),
+              supabase.from('messages').delete().eq('room_code', roomCode)
+            ])
+            
+            // Reset all players to not ready
+            await supabase.from('players')
+              .update({ ready: false, updated_at: nowIso() })
+              .eq('room_code', roomCode)
+              .eq('is_active', true)
+            
+            // Reset game state
+            await transitionPhase('waiting', { 
+              results: null, 
+              imposter_id: null, 
+              question_id: null, 
+              discussion_ends_at: null 
+            })
           }
           return true
         }
@@ -398,6 +518,21 @@ export function useRealtime() {
       return false
     }
   }, [players, myPlayerId, gameState, loadInitialData, setupSubscriptions, startGame, computeAndFinishResults, transitionPhase])
+
+  // Auto-reconnect on mount if session exists
+  useEffect(() => {
+    const session = localStorage.getItem('imposter_session')
+    if (session && !joinedSuccessfully) {
+      try {
+        const { playerId, playerName, roomCode } = JSON.parse(session)
+        // Attempt to rejoin
+        sendMessage('join', { playerId, playerName, roomCode })
+      } catch (e) {
+        console.error('Auto-reconnect failed', e)
+        localStorage.removeItem('imposter_session')
+      }
+    }
+  }, [])
 
   // Cleanup on unmount
   useEffect(() => {
