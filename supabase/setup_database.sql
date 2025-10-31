@@ -4,7 +4,7 @@
 -- Create players table (TEXT id to support client-generated ids)
 CREATE TABLE IF NOT EXISTS players (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
+  name TEXT NOT NULL UNIQUE, -- Globally unique player name
   room_code TEXT NOT NULL,
   device_id TEXT,
   email TEXT,
@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS games (
   question_id INTEGER,
   imposter_id TEXT,
   discussion_ends_at TIMESTAMPTZ,
+  countdown_started_at TIMESTAMPTZ, -- When countdown started
+  countdown_paused_at TIMESTAMPTZ, -- When countdown was paused
+  countdown_remaining_ms INTEGER DEFAULT 5000, -- Remaining countdown time in ms
   results JSONB,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
@@ -75,6 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_players_is_active ON players(is_active);
 CREATE INDEX IF NOT EXISTS idx_players_last_seen ON players(last_seen);
 CREATE INDEX IF NOT EXISTS idx_players_room ON players(room_code);
 CREATE INDEX IF NOT EXISTS idx_players_device ON players(device_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_players_name_unique ON players(LOWER(name)); -- Case-insensitive unique names
 CREATE INDEX IF NOT EXISTS idx_games_room ON games(room_code);
 CREATE INDEX IF NOT EXISTS idx_games_phase ON games(phase);
 CREATE INDEX IF NOT EXISTS idx_votes_room ON votes(room_code);
