@@ -1,13 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
 export function ResultsDisplay(props) {
   const voteResults = props.voteResults || {}
   const imposter = props.imposter
   const players = props.players || []
-  const onNewGame = props.onNewGame
-  
-  const [showNewGameConfirm, setShowNewGameConfirm] = useState(false)
-  const [isResetting, setIsResetting] = useState(false)
   
   // Calculate vote tallies and determine outcome
   const gameAnalysis = useMemo(() => {
@@ -65,27 +61,6 @@ export function ResultsDisplay(props) {
   
   // Find imposter player info
   const imposterPlayer = players.find(p => p.id === imposter)
-  
-  // Handle new game with confirmation and loading state
-  const handleNewGame = async () => {
-    if (!onNewGame) return
-    
-    setIsResetting(true)
-    try {
-      await onNewGame()
-      setShowNewGameConfirm(false)
-    } catch (error) {
-      console.error('Failed to start new game:', error)
-      alert('Failed to start new game. Please try again.')
-    } finally {
-      setIsResetting(false)
-    }
-  }
-  
-  const handleReturnToLobby = async () => {
-    // Same as new game - resets to waiting phase
-    await handleNewGame()
-  }
   
   // Get outcome styling
   const getOutcomeStyle = (outcome) => {
@@ -213,54 +188,15 @@ export function ResultsDisplay(props) {
         </div>
       </div>
       
-      {/* Game Actions */}
-      <div className="flex flex-col sm:flex-row gap-4 justify-center">
-        <button
-          onClick={() => setShowNewGameConfirm(true)}
-          disabled={isResetting}
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-        >
-          {isResetting ? '⏳ Starting...' : '🎮 Start New Game'}
-        </button>
-        <button
-          onClick={handleReturnToLobby}
-          disabled={isResetting}
-          className="px-6 py-3 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-        >
-          {isResetting ? '⏳ Returning...' : '🏠 Return to Lobby'}
-        </button>
+      {/* Game Over - Players must leave and rejoin for a new game */}
+      <div className="text-center p-4 bg-gray-800 rounded-lg border border-gray-700">
+        <p className="text-gray-300 mb-2">
+          🎮 Game Over! To play again, leave the room and join a new game.
+        </p>
+        <p className="text-sm text-gray-400">
+          Click the "Leave" button to exit this room.
+        </p>
       </div>
-      
-      {/* New Game Confirmation Modal */}
-      {showNewGameConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-            <h4 className="text-lg font-semibold text-white mb-4">
-              Start New Game?
-            </h4>
-            <p className="text-gray-300 mb-6">
-              This will reset the current game and return all players to the waiting lobby. 
-              Are you sure you want to continue?
-            </p>
-            <div className="flex space-x-3">
-              <button
-                onClick={handleNewGame}
-                disabled={isResetting}
-                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
-              >
-                {isResetting ? 'Starting...' : 'Yes, Start New Game'}
-              </button>
-              <button
-                onClick={() => setShowNewGameConfirm(false)}
-                disabled={isResetting}
-                className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
