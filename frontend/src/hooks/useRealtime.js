@@ -354,12 +354,14 @@ export function useRealtime() {
     const playersChannel = supabase
       .channel(`players-room-${roomCode}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${roomCode}` }, (payload) => {
+        console.log('👥 Player event received:', payload.eventType, payload)
         setPlayers(prev => {
           let next = [...prev]
           const row = payload.new || payload.old
           if (payload.eventType === 'INSERT') {
             // Only add if active
             if (row.is_active) {
+              console.log('➕ Adding player:', row.name)
               next = [...next, { id: row.id, name: row.name, joined_at: row.joined_at || row.created_at, is_active: row.is_active, ready: !!row.ready }]
             }
           } else if (payload.eventType === 'UPDATE') {
@@ -367,16 +369,22 @@ export function useRealtime() {
               // Update if exists, or add if becoming active
               const exists = next.some(p => p.id === row.id)
               if (exists) {
+                console.log('🔄 Updating player:', row.name)
                 next = next.map(p => p.id === row.id ? { ...p, name: row.name, joined_at: row.joined_at || p.joined_at, is_active: row.is_active, ready: !!row.ready } : p)
               } else {
+                console.log('➕ Adding active player:', row.name)
                 next = [...next, { id: row.id, name: row.name, joined_at: row.joined_at || row.created_at, is_active: row.is_active, ready: !!row.ready }]
               }
             } else {
               // Remove if becoming inactive
+              console.log('➖ Removing inactive player:', row.name)
               next = next.filter(p => p.id !== row.id)
             }
           } else if (payload.eventType === 'DELETE') {
+            console.log('🗑️ Deleting player:', row?.name || row?.id, 'Current players:', prev.length)
+            const beforeLength = next.length
             next = next.filter(p => p.id !== row.id)
+            console.log(`Filtered from ${beforeLength} to ${next.length} players`)
           }
           // update leader
           const newLeader = computeLeader(next)
@@ -797,8 +805,32 @@ export function useRealtime() {
         case 'leave': {
           if (!roomCode || !myPlayerId) return false
           
+          console.log('🚪 Leaving room:', { roomCode, myPlayerId })
+          
+          // Clean up subscriptions FIRST to avoid receiving our own delete events
+          if (window.__roomCleanup) { 
+            window.__roomCleanup()
+            window.__roomCleanup = null 
+          }
+          
+          // Clear countdown intervals
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current)
+            countdownIntervalRef.current = null
+          }
+          if (countdownCheckRef.current) {
+            clearInterval(countdownCheckRef.current)
+            countdownCheckRef.current = null
+          }
+          
           // Delete player completely (not just mark inactive)
-          await supabase.from('players').delete().eq('id', myPlayerId)
+          // This will trigger DELETE events for other clients' subscriptions
+          const { error: delError } = await supabase.from('players').delete().eq('id', myPlayerId)
+          if (delError) {
+            console.error('Failed to delete player:', delError)
+          } else {
+            console.log('✅ Player deleted successfully')
+          }
           
           // Also delete their votes, answers, and messages
           await Promise.all([
@@ -818,7 +850,7 @@ export function useRealtime() {
           
           if (newPlayerCount === 0) {
             // Room is empty, delete all room data
-            console.log(`Room ${roomCode} is empty, deleting...`)
+            console.log(`🗑️ Room ${roomCode} is empty, deleting all room data...`)
             await Promise.all([
               supabase.from('games').delete().eq('room_code', roomCode),
               supabase.from('messages').delete().eq('room_code', roomCode),
@@ -831,9 +863,10 @@ export function useRealtime() {
               .from('games')
               .update({ player_count: newPlayerCount, updated_at: nowIso() })
               .eq('room_code', roomCode)
+            console.log(`📊 Updated player count to ${newPlayerCount}`)
           }
           
-          // Clear local state
+          // Clear local state AFTER all database operations
           setJoinedSuccessfully(false)
           setMyPlayerId(null)
           setPlayers([]) // Clear players list
@@ -845,22 +878,7 @@ export function useRealtime() {
           roomCodeRef.current = null
           playerNameRef.current = ''
           
-          // Clean up subscriptions
-          if (window.__roomCleanup) { 
-            window.__roomCleanup()
-            window.__roomCleanup = null 
-          }
-          
-          // Clear countdown intervals
-          if (countdownIntervalRef.current) {
-            clearInterval(countdownIntervalRef.current)
-            countdownIntervalRef.current = null
-          }
-          if (countdownCheckRef.current) {
-            clearInterval(countdownCheckRef.current)
-            countdownCheckRef.current = null
-          }
-          
+          console.log('✅ Left room successfully')
           return true
         }
         case 'toggle_ready': {
